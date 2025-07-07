@@ -1,9 +1,10 @@
 use nu_ansi_term::{Color, ansi::RESET};
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{ToTokens, quote};
 use std::sync::Once;
 use syn::{
-    Attribute, Error, Ident, ImplItem, Item, ItemFn, ItemMod, Result, Token,
+    Attribute, Error, FnArg, Ident, ImplItem, ImplItemFn, Item, ItemFn, ItemMod, LitStr, Result,
+    Token,
     parse::{Parse, ParseStream},
     parse_macro_input, parse_quote,
 };
@@ -16,6 +17,7 @@ struct PrintRunArgs {
     colored: bool,
     duration: bool,
     indent: bool,
+    prefix: Option<String>,
     timestamps: bool,
 }
 
@@ -31,6 +33,11 @@ impl Parse for PrintRunArgs {
                 "colored" => args.colored = true,
                 "duration" => args.duration = true,
                 "indent" => args.indent = true,
+                "prefix" => {
+                    let _ = input.parse::<Option<Token![=]>>()?;
+                    let lit: LitStr = input.parse()?;
+                    args.prefix = Some(lit.value().to_string());
+                }
                 "timestamps" => args.timestamps = true,
                 other => {
                     return Err(Error::new(
@@ -154,6 +161,7 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
         duration,
         indent,
         timestamps,
+        prefix,
     } = args;
     let input = parse_macro_input!(item as ItemFn);
     let ItemFn {
@@ -162,7 +170,11 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
         sig,
         block,
     } = input;
+
+    // Create name with prefix
     let fn_name = sig.ident.to_string();
+    let prefix = prefix.unwrap_or("".into());
+    let fn_name = format!("{prefix}{fn_name}");
 
     // Create start/end function names
     let start = or_else!(colored, colorize!(fn_name.clone(), Yellow), fn_name.clone());
@@ -265,9 +277,15 @@ pub fn auto_print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
                     func.attrs.push(fn_macro.clone());
                 }
                 Item::Impl(item_impl) => {
+                    let ty_str = (&item_impl.self_ty).into_token_stream().to_string();
                     for impl_item in &mut item_impl.items {
                         if let ImplItem::Fn(method) = impl_item {
-                            method.attrs.push(fn_macro.clone());
+                            let is_static = is_static_method(&method);
+                            let ty_str = ty_str.clone() + if is_static { "::" } else { "." };
+                            let fn_macro = parse_quote! {
+                                #[print_run::print_run( #(#arg_idents),*, prefix=#ty_str )]
+                            };
+                            method.attrs.push(fn_macro);
                         }
                     }
                 }
@@ -284,4 +302,12 @@ pub fn auto_print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     let module = define_module();
 
     TokenStream::from(quote! { #input #module })
+}
+
+fn is_static_method(method: &ImplItemFn) -> bool {
+    match method.sig.inputs.first() {
+        Some(FnArg::Receiver(_)) => false, // instance method
+        Some(FnArg::Typed(_)) => true,     // static method (no self)
+        None => true,                      // no args = static
+    }
 }
