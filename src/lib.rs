@@ -108,7 +108,7 @@ macro_rules! create_timestamp {
 
 macro_rules! create_duration {
     ($colored:expr) => {{
-        let colorize = or_else!($colored, colorize_fn!(Yellow), quote! { |txt: String| txt });
+        let colorize = or_else!($colored, colorize_fn!(Green), quote! { |txt: String| txt });
         quote! {
             |start: std::time::Instant| {
                 let elapsed = start.elapsed().as_nanos();
@@ -165,8 +165,8 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     let fn_name = sig.ident.to_string();
 
     // Create start/end function names
-    let start = or_else!(colored, colorize!(fn_name.clone(), Green), fn_name.clone());
-    let end = or_else!(colored, colorize!(fn_name.clone(), Cyan), fn_name.clone());
+    let start = or_else!(colored, colorize!(fn_name.clone(), Yellow), fn_name.clone());
+    let end = or_else!(colored, colorize!(fn_name.clone(), Blue), fn_name.clone());
 
     // Create timestamp creator closure
     let create_timestamp_fn = or_empty_str!(timestamps, create_timestamp!(colored));
