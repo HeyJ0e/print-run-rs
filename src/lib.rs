@@ -1,4 +1,4 @@
-use colorize::colorize;
+use nu_ansi_term::{Color, ansi::RESET};
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
@@ -36,6 +36,16 @@ impl Parse for PrintRunArgs {
     }
 }
 
+macro_rules! colorize_if {
+    ($do:expr, $txt:expr, $c: ident) => {
+        if $do {
+            format!("{}{}{}", Color::$c.prefix().to_string(), $txt, RESET)
+        } else {
+            $txt
+        }
+    };
+}
+
 #[proc_macro_attribute]
 pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as PrintRunArgs);
@@ -50,26 +60,18 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     let PrintRunArgs { colored } = args;
 
     // Create start/end messages
-    let start_fn = if colored {
-        colorize!("{}", Fg->fn_name)
-    } else {
-        fn_name.clone()
-    };
-    let start_msg = format!("{} starting", start_fn);
+    let start_fn = colorize_if!(colored, fn_name.clone(), Green);
+    let end_fn = colorize_if!(colored, fn_name.clone(), Cyan);
 
-    let end_fn = if colored {
-        colorize!("{}", Fg->fn_name)
-    } else {
-        fn_name.clone()
-    };
+    let start_msg = format!("{} starting", start_fn);
     let end_msg = format!("{} ended", end_fn);
 
     // Wrap the original function body
     let new_block = quote! {
         {
-            println!("{}", #start_msg);
+            println!(#start_msg);
             let result = (|| #block)();
-            println!("{}", #end_msg);
+            println!(#end_msg);
             result
         }
     };
