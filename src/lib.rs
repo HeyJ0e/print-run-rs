@@ -3,7 +3,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use std::sync::Once;
 use syn::{
-    Attribute, Error, Ident, Item, ItemFn, ItemMod, Result, Token,
+    Attribute, Error, Ident, ImplItem, Item, ItemFn, ItemMod, Result, Token,
     parse::{Parse, ParseStream},
     parse_macro_input, parse_quote,
 };
@@ -257,11 +257,21 @@ pub fn auto_print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[print_run::print_run( #(#arg_idents),* )]
     };
 
-    // Add the macro attribute to all functions in the module
+    // Add the macro attribute to all functions and struct methods in the module
     if let Some((_, ref mut items)) = input.content {
-        for item in items.iter_mut() {
-            if let Item::Fn(func) = item {
-                func.attrs.push(fn_macro.clone());
+        for item in items {
+            match item {
+                Item::Fn(func) => {
+                    func.attrs.push(fn_macro.clone());
+                }
+                Item::Impl(item_impl) => {
+                    for impl_item in &mut item_impl.items {
+                        if let ImplItem::Fn(method) = impl_item {
+                            method.attrs.push(fn_macro.clone());
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     } else {
