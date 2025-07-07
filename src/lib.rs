@@ -3,9 +3,9 @@ use proc_macro::TokenStream;
 use quote::quote;
 use std::sync::Once;
 use syn::{
-    Error, Ident, ItemFn, Result, Token,
+    Attribute, Error, Ident, Item, ItemFn, ItemMod, Result, Token,
     parse::{Parse, ParseStream},
-    parse_macro_input,
+    parse_macro_input, parse_quote,
 };
 
 static IS_DEPTH_MODULE_ADDED: Once = Once::new();
@@ -25,7 +25,7 @@ impl Parse for PrintRunArgs {
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
-            let _ = input.parse::<Option<Token![,]>>(); // allow commas or not
+            let _ = input.parse::<Option<Token![,]>>(); // allow optional commas
 
             match ident.to_string().as_str() {
                 "colored" => args.colored = true,
@@ -149,6 +149,12 @@ macro_rules! create_indent {
 #[proc_macro_attribute]
 pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as PrintRunArgs);
+    let PrintRunArgs {
+        colored,
+        duration,
+        indent,
+        timestamps,
+    } = args;
     let input = parse_macro_input!(item as ItemFn);
     let ItemFn {
         attrs,
@@ -156,12 +162,6 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
         sig,
         block,
     } = input;
-    let PrintRunArgs {
-        colored,
-        duration,
-        indent,
-        timestamps,
-    } = args;
     let fn_name = sig.ident.to_string();
 
     // Create start/end function names
@@ -224,4 +224,46 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(output)
+}
+
+#[derive(Debug, Default)]
+struct AutoPrintRunArgs {
+    args: Vec<Ident>,
+}
+
+impl Parse for AutoPrintRunArgs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let mut args = Vec::new();
+        while !input.is_empty() {
+            args.push(input.parse()?);
+            let _ = input.parse::<Option<Token![,]>>()?; // allow optional commas
+        }
+        Ok(Self { args })
+    }
+}
+
+#[proc_macro_attribute]
+pub fn auto_print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as AutoPrintRunArgs);
+    let mut input = parse_macro_input!(item as ItemMod);
+
+    let arg_idents = &args.args;
+    let fn_macro: Attribute = parse_quote! {
+        #[print_run( #(#arg_idents),* )]
+    };
+
+    // Add the macro attribute to all functions in the module
+    if let Some((_, ref mut items)) = input.content {
+        for item in items {
+            if let Item::Fn(func) = item {
+                func.attrs.push(fn_macro.clone());
+            }
+        }
+    } else {
+        return Error::new_spanned(&input, "`#[auto_print_run]` only supports inline modules")
+            .to_compile_error()
+            .into();
+    }
+
+    TokenStream::from(quote! { #input })
 }
