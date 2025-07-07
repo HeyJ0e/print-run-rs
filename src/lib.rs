@@ -1,17 +1,21 @@
 use nu_ansi_term::{Color, ansi::RESET};
 use proc_macro::TokenStream;
 use quote::quote;
+use std::sync::Once;
 use syn::{
     Error, Ident, ItemFn, Result, Token,
     parse::{Parse, ParseStream},
     parse_macro_input,
 };
 
+static IS_DEPTH_MODULE_ADDED: Once = Once::new();
+
 /// Optional input flags
 #[derive(Debug, Default)]
 struct PrintRunArgs {
     colored: bool,
     duration: bool,
+    indent: bool,
     timestamps: bool,
 }
 
@@ -26,6 +30,7 @@ impl Parse for PrintRunArgs {
             match ident.to_string().as_str() {
                 "colored" => args.colored = true,
                 "duration" => args.duration = true,
+                "indent" => args.indent = true,
                 "timestamps" => args.timestamps = true,
                 other => {
                     return Err(Error::new(
@@ -40,9 +45,21 @@ impl Parse for PrintRunArgs {
     }
 }
 
-macro_rules! cond {
+macro_rules! or_else {
     ($cond:expr, $true_:expr, $false_:expr) => {
         if $cond { $true_ } else { $false_ }
+    };
+}
+
+macro_rules! or_nothing {
+    ($cond:expr, $true_:expr) => {
+        or_else!($cond, $true_, quote! {})
+    };
+}
+
+macro_rules! or_empty_str {
+    ($cond:expr, $true_:expr) => {
+        or_else!($cond, $true_, quote! { || "".to_string() })
     };
 }
 
@@ -63,7 +80,7 @@ macro_rules! colorize_fn {
 
 macro_rules! create_timestamp {
     ($colored:expr) => {{
-        let colorize = cond!(
+        let colorize = or_else!(
             $colored,
             colorize_fn!(DarkGray),
             quote! { |txt: String| txt }
@@ -91,7 +108,7 @@ macro_rules! create_timestamp {
 
 macro_rules! create_duration {
     ($colored:expr) => {{
-        let colorize = cond!($colored, colorize_fn!(Yellow), quote! { |txt: String| txt });
+        let colorize = or_else!($colored, colorize_fn!(Yellow), quote! { |txt: String| txt });
         quote! {
             |start: std::time::Instant| {
                 let elapsed = start.elapsed().as_nanos();
@@ -113,6 +130,22 @@ macro_rules! create_duration {
     }};
 }
 
+macro_rules! create_indent {
+    ($val:expr, $ch:expr) => {{
+        let val = $val;
+        let ch = $ch;
+        quote! {
+            || crate::__print_run_depth::DEPTH.with(|depth| {
+                let depth_val = *depth.borrow();
+                *depth.borrow_mut() = depth_val.saturating_add_signed(#val);
+                let depth_val= depth_val.saturating_add_signed((#val-1) / 2);
+                let spaces = "┆ ".repeat(depth_val);
+                format!("{}{} ", spaces, #ch)
+            })
+        }
+    }};
+}
+
 #[proc_macro_attribute]
 pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as PrintRunArgs);
@@ -126,48 +159,68 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     let PrintRunArgs {
         colored,
         duration,
+        indent,
         timestamps,
     } = args;
     let fn_name = sig.ident.to_string();
 
     // Create start/end function names
-    let start = cond!(colored, colorize!(fn_name.clone(), Green), fn_name.clone());
-    let end = cond!(colored, colorize!(fn_name.clone(), Cyan), fn_name.clone());
+    let start = or_else!(colored, colorize!(fn_name.clone(), Green), fn_name.clone());
+    let end = or_else!(colored, colorize!(fn_name.clone(), Cyan), fn_name.clone());
 
     // Create timestamp creator closure
-    let create_timestamp_fn = cond!(
-        timestamps,
-        create_timestamp!(colored),
-        quote! { || "".to_string() }
-    );
+    let create_timestamp_fn = or_empty_str!(timestamps, create_timestamp!(colored));
 
-    // Create duration creator closures
-    let duration_fn = cond!(
+    // Create duration creator closure
+    let duration_fn = or_else!(
         duration,
         create_duration!(colored),
         quote! { |_| "".to_string() }
     );
+
+    // Create indent creator closures
+    let indent_top = or_empty_str!(indent, create_indent!(1isize, "┌"));
+    let indent_bottom = or_empty_str!(indent, create_indent!(-1isize, "└"));
 
     // Wrap the original function body
     let new_block = quote! {
         {
             let ts = {#create_timestamp_fn}();
             let start = std::time::Instant::now();
-            println!("{}{} starting", ts, #start);
+            let indent = {#indent_top}();
+            println!("{}{}{} starting", ts, indent, #start);
 
             let result = (|| #block)();
 
             let dur = {#duration_fn}(start);
             let ts = {#create_timestamp_fn}();
-            println!("{}{} ended{}", ts, #end, dur);
+            let indent = {#indent_bottom}();
+            println!("{}{}{} ended{}", ts, indent, #end, dur);
             result
         }
     };
+
+    // Define support module with DEPTH if it runs for the first time
+    let mut define = false;
+    IS_DEPTH_MODULE_ADDED.call_once(|| define = true);
+    let module = or_nothing!(
+        define,
+        quote! {
+            #[doc(hidden)]
+            pub(crate) mod __print_run_depth {
+                use std::cell::RefCell;
+                thread_local! {
+                    pub static DEPTH: RefCell<usize> = RefCell::new(0);
+                }
+            }
+        }
+    );
 
     // Reconstruct the function
     let output = quote! {
         #(#attrs)*
         #vis #sig #new_block
+        #module
     };
 
     TokenStream::from(output)
