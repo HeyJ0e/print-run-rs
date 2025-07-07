@@ -200,10 +200,24 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
+    // Add depth module if needed
+    let module = define_module();
+
+    // Reconstruct the function
+    let output = quote! {
+        #(#attrs)*
+        #vis #sig #new_block
+        #module
+    };
+
+    TokenStream::from(output)
+}
+
+fn define_module() -> proc_macro2::TokenStream {
     // Define support module with DEPTH if it runs for the first time
     let mut define = false;
     IS_DEPTH_MODULE_ADDED.call_once(|| define = true);
-    let module = or_nothing!(
+    or_nothing!(
         define,
         quote! {
             #[doc(hidden)]
@@ -214,16 +228,7 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
         }
-    );
-
-    // Reconstruct the function
-    let output = quote! {
-        #(#attrs)*
-        #vis #sig #new_block
-        #module
-    };
-
-    TokenStream::from(output)
+    )
 }
 
 #[derive(Debug, Default)]
@@ -249,12 +254,12 @@ pub fn auto_print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let arg_idents = &args.args;
     let fn_macro: Attribute = parse_quote! {
-        #[print_run( #(#arg_idents),* )]
+        #[print_run::print_run( #(#arg_idents),* )]
     };
 
     // Add the macro attribute to all functions in the module
     if let Some((_, ref mut items)) = input.content {
-        for item in items {
+        for item in items.iter_mut() {
             if let Item::Fn(func) = item {
                 func.attrs.push(fn_macro.clone());
             }
@@ -265,5 +270,8 @@ pub fn auto_print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
             .into();
     }
 
-    TokenStream::from(quote! { #input })
+    // Add depth module if needed
+    let module = define_module();
+
+    TokenStream::from(quote! { #input #module })
 }
