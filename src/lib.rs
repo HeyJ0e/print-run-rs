@@ -11,6 +11,7 @@ use syn::{
 #[derive(Debug, Default)]
 struct PrintRunArgs {
     colored: bool,
+    timestamps: bool,
 }
 
 impl Parse for PrintRunArgs {
@@ -23,6 +24,7 @@ impl Parse for PrintRunArgs {
 
             match ident.to_string().as_str() {
                 "colored" => args.colored = true,
+                "timestamps" => args.timestamps = true,
                 other => {
                     return Err(Error::new(
                         ident.span(),
@@ -36,14 +38,53 @@ impl Parse for PrintRunArgs {
     }
 }
 
-macro_rules! colorize_if {
-    ($do:expr, $txt:expr, $c: ident) => {
-        if $do {
-            format!("{}{}{}", Color::$c.prefix().to_string(), $txt, RESET)
-        } else {
-            $txt
-        }
+macro_rules! cond {
+    ($cond:expr, $true_:expr, $false_:expr) => {
+        if $cond { $true_ } else { $false_ }
     };
+}
+
+macro_rules! colorize {
+    ($txt:expr, $col_name: ident) => {
+        format!("{}{}{}", Color::$col_name.prefix().to_string(), $txt, RESET)
+    };
+}
+
+macro_rules! colorize_fn {
+    ($color_name: ident) => {{
+        let color = Color::$color_name.prefix().to_string();
+        quote! {
+            |txt: String| format!("{}{}{}", #color, txt, #RESET)
+        }
+    }};
+}
+
+macro_rules! create_timestamp {
+    ($colored:expr) => {{
+        let colorize = cond!(
+            $colored,
+            colorize_fn!(DarkGray),
+            quote! { |txt: String| txt }
+        );
+        quote! {
+            || {
+                let now = std::time::SystemTime::now();
+                let epoch = now
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("Time went backwards");
+
+                let total_secs = epoch.as_secs();
+                let millis = epoch.subsec_millis();
+
+                let hours = (total_secs / 3600) % 24;
+                let minutes = (total_secs / 60) % 60;
+                let seconds = total_secs % 60;
+                let ts = format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis);
+                let ts = {#colorize}(ts);
+                format!("{} ", ts) // use colorless space as a separator
+            }
+        }
+    }};
 }
 
 #[proc_macro_attribute]
@@ -57,21 +98,32 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
         block,
     } = input;
     let fn_name = sig.ident.to_string();
-    let PrintRunArgs { colored } = args;
+    let PrintRunArgs {
+        colored,
+        timestamps,
+    } = args;
 
-    // Create start/end messages
-    let start_fn = colorize_if!(colored, fn_name.clone(), Green);
-    let end_fn = colorize_if!(colored, fn_name.clone(), Cyan);
+    // Create start/end function names
+    let start = cond!(colored, colorize!(fn_name.clone(), Green), fn_name.clone());
+    let end = cond!(colored, colorize!(fn_name.clone(), Cyan), fn_name.clone());
 
-    let start_msg = format!("{} starting", start_fn);
-    let end_msg = format!("{} ended", end_fn);
+    // Create timestamp creator closure
+    let create_timestamp_fn = if timestamps {
+        create_timestamp!(colored)
+    } else {
+        quote! { || "".to_string() }
+    };
 
     // Wrap the original function body
     let new_block = quote! {
         {
-            println!(#start_msg);
+            let ts = {#create_timestamp_fn}();
+            println!("{}{} starting", ts, #start);
+
             let result = (|| #block)();
-            println!(#end_msg);
+
+            let ts = {#create_timestamp_fn}();
+            println!("{}{} ended", ts, #end);
             result
         }
     };
