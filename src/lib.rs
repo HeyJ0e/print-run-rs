@@ -85,6 +85,12 @@ macro_rules! colorize_fn {
             |txt: String| format!("{}{}{}", #color, txt, #RESET)
         }
     }};
+    ($color_name: ident, "bold") => {{
+        let color = Color::$color_name.bold().prefix().to_string();
+        quote! {
+            |txt: String| format!("{}{}{}", #color, txt, #RESET)
+        }
+    }};
 }
 
 macro_rules! create_timestamp {
@@ -208,6 +214,11 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     let indent_body = or_empty_str!(indent, create_indent!(0isize, ""));
 
     // Create msg! macro
+    let colorize_msg = if colored {
+        colorize_fn!(White, "bold")
+    } else {
+        colorize_fn!(Default, "bold")
+    };
     let msg_macro = quote! {
         #[allow(unused)]
         macro_rules! msg {
@@ -215,6 +226,7 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let ts = {#create_timestamp_fn}();
                 let indent = {#indent_body}();
                 let msg = format!($($arg)*);
+                let msg = {#colorize_msg}(msg);
                 println!("{}{} {}", ts, indent, msg);
             }};
         }
