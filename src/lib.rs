@@ -17,6 +17,7 @@ struct PrintRunArgs {
     colored: bool,
     duration: bool,
     indent: bool,
+    supress_labels: bool,
     prefix: Option<String>,
     timestamps: bool,
 }
@@ -33,6 +34,7 @@ impl Parse for PrintRunArgs {
                 "colored" => args.colored = true,
                 "duration" => args.duration = true,
                 "indent" => args.indent = true,
+                "supress_labels" => args.supress_labels = true,
                 "prefix" => {
                     let _ = input.parse::<Option<Token![=]>>()?;
                     let lit: LitStr = input.parse()?;
@@ -114,8 +116,9 @@ macro_rules! create_timestamp {
 }
 
 macro_rules! create_duration {
-    ($colored:expr) => {{
+    ($colored:expr, $supress_labels:expr) => {{
         let colorize = or_else!($colored, colorize_fn!(Green), quote! { |txt: String| txt });
+        let supress_labels = $supress_labels;
         quote! {
             |start: std::time::Instant| {
                 let elapsed = start.elapsed().as_nanos();
@@ -130,8 +133,12 @@ macro_rules! create_duration {
                         format!("{:.2}s", elapsed as f64 / 1_000_000_000.0)
                     }
                 ;
-                let dur = {#colorize}(dur);
-                format!(" in {}", dur) // colorize the result only
+                let dur = {#colorize}(dur); // colorize the result only
+                if #supress_labels {
+                    format!("[{}]", dur)
+                } else {
+                    format!(" in {}", dur)
+                }
             }
         }
     }};
@@ -160,8 +167,9 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
         colored,
         duration,
         indent,
-        timestamps,
+        supress_labels,
         prefix,
+        timestamps,
     } = args;
     let input = parse_macro_input!(item as ItemFn);
     let ItemFn {
@@ -176,6 +184,10 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     let prefix = prefix.unwrap_or("".into());
     let fn_name = format!("{prefix}{fn_name}");
 
+    // Create labels
+    let start_label = or_else!(!supress_labels, "starting", "");
+    let end_label = or_else!(!supress_labels, "ended", "");
+
     // Create start/end function names
     let start = or_else!(colored, colorize!(fn_name.clone(), Yellow), fn_name.clone());
     let end = or_else!(colored, colorize!(fn_name.clone(), Blue), fn_name.clone());
@@ -186,7 +198,7 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Create duration creator closure
     let duration_fn = or_else!(
         duration,
-        create_duration!(colored),
+        create_duration!(colored, supress_labels),
         quote! { |_| "".to_string() }
     );
 
@@ -197,6 +209,7 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Create msg! macro
     let msg_macro = quote! {
+        #[allow(unused)]
         macro_rules! msg {
             ($($arg:tt)*) => {{
                 let ts = {#create_timestamp_fn}();
@@ -213,7 +226,7 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
             let ts = {#create_timestamp_fn}();
             let start = std::time::Instant::now();
             let indent = {#indent_top}();
-            println!("{}{}{} starting", ts, indent, #start);
+            println!("{}{}{} {}", ts, indent, #start, #start_label);
             #msg_macro
 
             let result = (|| #block)();
@@ -221,7 +234,7 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
             let dur = {#duration_fn}(start);
             let ts = {#create_timestamp_fn}();
             let indent = {#indent_bottom}();
-            println!("{}{}{} ended{}", ts, indent, #end, dur);
+            println!("{}{}{} {}{}", ts, indent, #end, #end_label, dur);
             result
         }
     };
