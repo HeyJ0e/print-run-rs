@@ -1,6 +1,6 @@
 use nu_ansi_term::{Color, ansi::RESET};
 use proc_macro::TokenStream;
-use quote::{ToTokens, quote};
+use quote::{ToTokens, format_ident, quote};
 use std::sync::Once;
 use syn::{
     Attribute, Error, FnArg, Ident, ImplItem, ImplItemFn, Item, ItemFn, ItemMod, LitStr, Result,
@@ -20,6 +20,30 @@ struct PrintRunArgs {
     supress_labels: bool,
     timestamps: bool,
     __struct_prefix: Option<String>,
+}
+
+impl PrintRunArgs {
+    pub fn to_idents(&self) -> Vec<Ident> {
+        let mut result = Vec::new();
+
+        if self.colored {
+            result.push(format_ident!("colored"));
+        }
+        if self.duration {
+            result.push(format_ident!("duration"));
+        }
+        if self.indent {
+            result.push(format_ident!("indent"));
+        }
+        if self.supress_labels {
+            result.push(format_ident!("supress_labels"));
+        }
+        if self.timestamps {
+            result.push(format_ident!("timestamps"));
+        }
+
+        result
+    }
 }
 
 impl Parse for PrintRunArgs {
@@ -169,6 +193,27 @@ macro_rules! create_indent {
 #[proc_macro_attribute]
 pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as PrintRunArgs);
+
+    // Try parsing as a function first
+    if let Ok(func) = syn::parse::<ItemFn>(item.clone()) {
+        return print_run_fn(args, func);
+    }
+
+    // Try parsing as a module
+    if let Ok(module) = syn::parse::<ItemMod>(item.clone()) {
+        return print_run_mod(args, module);
+    }
+
+    // Unsupported item — return error
+    syn::Error::new_spanned(
+        proc_macro2::TokenStream::from(item),
+        "#[print_run] can only be used on functions or inline modules",
+    )
+    .to_compile_error()
+    .into()
+}
+
+fn print_run_fn(args: PrintRunArgs, fn_item: ItemFn) -> TokenStream {
     let PrintRunArgs {
         colored,
         duration,
@@ -177,13 +222,12 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
         timestamps,
         __struct_prefix,
     } = args;
-    let input = parse_macro_input!(item as ItemFn);
     let ItemFn {
         attrs,
         vis,
         sig,
         block,
-    } = input;
+    } = fn_item;
 
     // Create name with prefix
     let fn_name = sig.ident.to_string();
@@ -252,7 +296,7 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     // Add depth module if needed
-    let module = define_module();
+    let module = define_depth_module();
 
     // Reconstruct the function
     let output = quote! {
@@ -264,52 +308,14 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     TokenStream::from(output)
 }
 
-fn define_module() -> proc_macro2::TokenStream {
-    // Define support module with DEPTH if it runs for the first time
-    let mut define = false;
-    IS_DEPTH_MODULE_ADDED.call_once(|| define = true);
-    or_nothing!(
-        define,
-        quote! {
-            #[doc(hidden)]
-            pub(crate) mod __print_run_depth {
-                use std::cell::RefCell;
-                thread_local! {
-                    pub static DEPTH: RefCell<usize> = RefCell::new(0);
-                }
-            }
-        }
-    )
-}
-
-#[derive(Debug, Default)]
-struct AutoPrintRunArgs {
-    args: Vec<Ident>,
-}
-
-impl Parse for AutoPrintRunArgs {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let mut args = Vec::new();
-        while !input.is_empty() {
-            args.push(input.parse()?);
-            let _ = input.parse::<Option<Token![,]>>()?; // allow optional commas
-        }
-        Ok(Self { args })
-    }
-}
-
-#[proc_macro_attribute]
-pub fn auto_print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(attr as AutoPrintRunArgs);
-    let mut input = parse_macro_input!(item as ItemMod);
-
-    let arg_idents = &args.args;
+fn print_run_mod(args: PrintRunArgs, mut module_item: ItemMod) -> TokenStream {
+    let arg_idents = args.to_idents();
     let fn_macro: Attribute = parse_quote! {
         #[print_run::print_run( #(#arg_idents),* )]
     };
 
     // Add the macro attribute to all functions and struct methods in the module
-    if let Some((_, ref mut items)) = input.content {
+    if let Some((_, ref mut items)) = module_item.content {
         for item in items {
             match item {
                 Item::Fn(func) => {
@@ -332,15 +338,38 @@ pub fn auto_print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
     } else {
-        return Error::new_spanned(&input, "`#[auto_print_run]` only supports inline modules")
-            .to_compile_error()
-            .into();
+        return Error::new_spanned(
+            module_item.mod_token,
+            "`#[print_run]` only supports inline modules",
+        )
+        .to_compile_error()
+        .into();
     }
 
     // Add depth module if needed
-    let module = define_module();
+    let depth_module = define_depth_module();
+    let module_tokens = module_item.into_token_stream();
 
-    TokenStream::from(quote! { #input #module })
+    TokenStream::from(quote! { #module_tokens #depth_module })
+}
+
+fn define_depth_module() -> proc_macro2::TokenStream {
+    // Define support module with DEPTH if it runs for the first time
+    let mut define = false;
+    IS_DEPTH_MODULE_ADDED.call_once(|| define = true);
+    or_nothing!(
+        define,
+        quote! {
+            #[doc(hidden)]
+            #[allow(unused)]
+            pub(crate) mod __print_run_depth {
+                use std::cell::RefCell;
+                thread_local! {
+                    pub static DEPTH: RefCell<usize> = RefCell::new(0);
+                }
+            }
+        }
+    )
 }
 
 fn is_static_method(method: &ImplItemFn) -> bool {
