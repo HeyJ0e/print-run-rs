@@ -18,8 +18,8 @@ struct PrintRunArgs {
     duration: bool,
     indent: bool,
     supress_labels: bool,
-    prefix: Option<String>,
     timestamps: bool,
+    __struct_prefix: Option<String>,
 }
 
 impl Parse for PrintRunArgs {
@@ -35,12 +35,12 @@ impl Parse for PrintRunArgs {
                 "duration" => args.duration = true,
                 "indent" => args.indent = true,
                 "supress_labels" => args.supress_labels = true,
-                "prefix" => {
+                "timestamps" => args.timestamps = true,
+                "__struct_prefix" => {
                     let _ = input.parse::<Option<Token![=]>>()?;
                     let lit: LitStr = input.parse()?;
-                    args.prefix = Some(lit.value().to_string());
+                    args.__struct_prefix = Some(lit.value().to_string());
                 }
-                "timestamps" => args.timestamps = true,
                 other => {
                     return Err(Error::new(
                         ident.span(),
@@ -174,8 +174,8 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
         duration,
         indent,
         supress_labels,
-        prefix,
         timestamps,
+        __struct_prefix,
     } = args;
     let input = parse_macro_input!(item as ItemFn);
     let ItemFn {
@@ -187,7 +187,7 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Create name with prefix
     let fn_name = sig.ident.to_string();
-    let prefix = prefix.unwrap_or("".into());
+    let prefix = __struct_prefix.unwrap_or("".into());
     let fn_name = format!("{prefix}{fn_name}");
 
     // Create labels
@@ -322,7 +322,7 @@ pub fn auto_print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
                             let is_static = is_static_method(&method);
                             let ty_str = ty_str.clone() + if is_static { "::" } else { "." };
                             let fn_macro = parse_quote! {
-                                #[print_run::print_run( #(#arg_idents),*, prefix=#ty_str )]
+                                #[print_run::print_run( #(#arg_idents),*, __struct_prefix=#ty_str )]
                             };
                             method.attrs.push(fn_macro);
                         }
