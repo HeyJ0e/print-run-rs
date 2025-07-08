@@ -1,7 +1,7 @@
 use nu_ansi_term::{Color, ansi::RESET};
 use proc_macro::TokenStream;
 use quote::{ToTokens, format_ident, quote};
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 use syn::{
     Attribute, Error, FnArg, Ident, ImplItem, ImplItemFn, Item, ItemFn, ItemMod, LitStr, Result,
     Token,
@@ -9,16 +9,17 @@ use syn::{
     parse_macro_input, parse_quote,
 };
 
-static IS_DEPTH_MODULE_ADDED: Once = Once::new();
+static IS_HELPER_MODULE_ADDED: Once = Once::new();
+static PRINT_RUN_DEFAULTS: OnceLock<PrintRunArgs> = OnceLock::new();
 
 /// Optional input flags
 #[derive(Debug, Default)]
 struct PrintRunArgs {
-    colored: bool,
-    duration: bool,
-    indent: bool,
-    supress_labels: bool,
-    timestamps: bool,
+    colored: Option<bool>,
+    duration: Option<bool>,
+    indent: Option<bool>,
+    supress_labels: Option<bool>,
+    timestamps: Option<bool>,
     __struct_prefix: Option<String>,
 }
 
@@ -26,23 +27,37 @@ impl PrintRunArgs {
     pub fn to_idents(&self) -> Vec<Ident> {
         let mut result = Vec::new();
 
-        if self.colored {
+        if self.colored == Some(true) {
             result.push(format_ident!("colored"));
         }
-        if self.duration {
+        if self.duration == Some(true) {
             result.push(format_ident!("duration"));
         }
-        if self.indent {
+        if self.indent == Some(true) {
             result.push(format_ident!("indent"));
         }
-        if self.supress_labels {
+        if self.supress_labels == Some(true) {
             result.push(format_ident!("supress_labels"));
         }
-        if self.timestamps {
+        if self.timestamps == Some(true) {
             result.push(format_ident!("timestamps"));
         }
 
         result
+    }
+
+    pub fn merge_with(&self, override_args: &PrintRunArgs) -> PrintRunArgs {
+        PrintRunArgs {
+            colored: override_args.colored.or(self.colored),
+            duration: override_args.duration.or(self.duration),
+            indent: override_args.indent.or(self.indent),
+            timestamps: override_args.timestamps.or(self.timestamps),
+            supress_labels: override_args.supress_labels.or(self.supress_labels),
+            __struct_prefix: override_args
+                .__struct_prefix
+                .clone()
+                .or_else(|| self.__struct_prefix.clone()),
+        }
     }
 }
 
@@ -55,11 +70,11 @@ impl Parse for PrintRunArgs {
             let _ = input.parse::<Option<Token![,]>>(); // allow optional commas
 
             match ident.to_string().as_str() {
-                "colored" => args.colored = true,
-                "duration" => args.duration = true,
-                "indent" => args.indent = true,
-                "supress_labels" => args.supress_labels = true,
-                "timestamps" => args.timestamps = true,
+                "colored" => args.colored = Some(true),
+                "duration" => args.duration = Some(true),
+                "indent" => args.indent = Some(true),
+                "supress_labels" => args.supress_labels = Some(true),
+                "timestamps" => args.timestamps = Some(true),
                 "__struct_prefix" => {
                     let _ = input.parse::<Option<Token![=]>>()?;
                     let lit: LitStr = input.parse()?;
@@ -179,7 +194,7 @@ macro_rules! create_indent {
         let val = $val;
         let ch = $ch;
         quote! {
-            || crate::__print_run_depth::DEPTH.with(|depth| {
+            || crate::__print_run_helper::DEPTH.with(|depth| {
                 let depth_val = *depth.borrow();
                 *depth.borrow_mut() = depth_val.saturating_add_signed(#val);
                 let depth_val= depth_val.saturating_add_signed((#val-1) / 2);
@@ -190,9 +205,33 @@ macro_rules! create_indent {
     }};
 }
 
+fn get_print_run_defaults() -> Option<&'static PrintRunArgs> {
+    PRINT_RUN_DEFAULTS.get()
+}
+
+#[proc_macro_attribute]
+pub fn print_run_defaults(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let attr_clone = attr.clone();
+    let args = parse_macro_input!(attr as PrintRunArgs);
+
+    if PRINT_RUN_DEFAULTS.set(args).is_err() {
+        return syn::Error::new_spanned(
+            proc_macro2::TokenStream::from(attr_clone),
+            "print run defaults already set",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    input
+}
+
 #[proc_macro_attribute]
 pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(attr as PrintRunArgs);
+    let mut args = parse_macro_input!(attr as PrintRunArgs);
+    if let Some(defaults) = get_print_run_defaults() {
+        args = defaults.merge_with(&args);
+    }
 
     // Try parsing as a function first
     if let Ok(func) = syn::parse::<ItemFn>(item.clone()) {
@@ -228,6 +267,11 @@ fn print_run_fn(args: PrintRunArgs, fn_item: ItemFn) -> TokenStream {
         sig,
         block,
     } = fn_item;
+    let colored = colored == Some(true);
+    let duration = duration == Some(true);
+    let indent = indent == Some(true);
+    let supress_labels = supress_labels == Some(true);
+    let timestamps = timestamps == Some(true);
 
     // Create name with prefix
     let fn_name = sig.ident.to_string();
@@ -295,14 +339,14 @@ fn print_run_fn(args: PrintRunArgs, fn_item: ItemFn) -> TokenStream {
         }
     };
 
-    // Add depth module if needed
-    let module = define_depth_module();
+    // Add helper module if needed
+    let helper_module = define_helper_module();
 
     // Reconstruct the function
     let output = quote! {
         #(#attrs)*
         #vis #sig #new_block
-        #module
+        #helper_module
     };
 
     TokenStream::from(output)
@@ -346,23 +390,23 @@ fn print_run_mod(args: PrintRunArgs, mut module_item: ItemMod) -> TokenStream {
         .into();
     }
 
-    // Add depth module if needed
-    let depth_module = define_depth_module();
+    // Add helper module if needed
+    let helper_module = define_helper_module();
     let module_tokens = module_item.into_token_stream();
 
-    TokenStream::from(quote! { #module_tokens #depth_module })
+    TokenStream::from(quote! { #module_tokens #helper_module })
 }
 
-fn define_depth_module() -> proc_macro2::TokenStream {
+fn define_helper_module() -> proc_macro2::TokenStream {
     // Define support module with DEPTH if it runs for the first time
     let mut define = false;
-    IS_DEPTH_MODULE_ADDED.call_once(|| define = true);
+    IS_HELPER_MODULE_ADDED.call_once(|| define = true);
     or_nothing!(
         define,
         quote! {
             #[doc(hidden)]
             #[allow(unused)]
-            pub(crate) mod __print_run_depth {
+            pub(crate) mod __print_run_helper {
                 use std::cell::RefCell;
                 thread_local! {
                     pub static DEPTH: RefCell<usize> = RefCell::new(0);
