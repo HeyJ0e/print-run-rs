@@ -193,6 +193,19 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Create indent creator closures
     let indent_top = or_empty_str!(indent, create_indent!(1isize, "┌"));
     let indent_bottom = or_empty_str!(indent, create_indent!(-1isize, "└"));
+    let indent_body = or_empty_str!(indent, create_indent!(0isize, ""));
+
+    // Create msg! macro
+    let msg_macro = quote! {
+        macro_rules! msg {
+            ($($arg:tt)*) => {{
+                let ts = {#create_timestamp_fn}();
+                let indent = {#indent_body}();
+                let msg = format!($($arg)*);
+                println!("{}{} {}", ts, indent, msg);
+            }};
+        }
+    };
 
     // Wrap the original function body
     let new_block = quote! {
@@ -201,6 +214,7 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
             let start = std::time::Instant::now();
             let indent = {#indent_top}();
             println!("{}{}{} starting", ts, indent, #start);
+            #msg_macro
 
             let result = (|| #block)();
 
