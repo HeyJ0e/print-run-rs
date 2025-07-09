@@ -4,10 +4,8 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{ToTokens, format_ident, quote};
 use std::sync::{Once, OnceLock};
 use syn::{
-    Attribute, Error, FnArg, Ident, ImplItem, ImplItemFn, Item, ItemFn, ItemMod, LitStr, Result,
-    Token, parse,
-    parse::{Parse, ParseStream},
-    parse_macro_input, parse_quote,
+    Attribute, Error, FnArg, Ident, ImplItem, ImplItemFn, Item, ItemFn, ItemImpl, ItemMod, LitStr,
+    Result, Token, parse, parse_macro_input, parse_quote,
 };
 
 static IS_HELPER_MODULE_ADDED: Once = Once::new();
@@ -100,8 +98,8 @@ impl PrintRunArgs {
     }
 }
 
-impl Parse for PrintRunArgs {
-    fn parse(input: ParseStream) -> Result<Self> {
+impl parse::Parse for PrintRunArgs {
+    fn parse(input: parse::ParseStream) -> Result<Self> {
         let mut args = PrintRunArgs::default();
 
         while !input.is_empty() {
@@ -282,10 +280,16 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
         return print_run_mod(new_args, module);
     }
 
+    // Try parsing as an implementation
+    if let Ok(mut implementation) = parse::<ItemImpl>(item.clone()) {
+        let new_args = extract_and_flatten_print_args(&args, &mut implementation.attrs);
+        return print_run_impl(new_args, implementation);
+    }
+
     // Unsupported item — return error
     Error::new_spanned(
         TokenStream2::from(item),
-        "#[print_run] can only be used on functions or inline modules",
+        "#[print_run] can only be used on functions, implementations or inline modules",
     )
     .to_compile_error()
     .into()
@@ -428,19 +432,8 @@ fn print_run_mod(args: PrintRunArgs, mut module_item: ItemMod) -> TokenStream {
             }
             // Struct member functions
             Item::Impl(item_impl) => {
-                // Get struct name
-                let ty_str = (&item_impl.self_ty).into_token_stream().to_string();
-
-                // Look for struct methods
-                for impl_item in &mut item_impl.items {
-                    if let ImplItem::Fn(method) = impl_item {
-                        let mut new_args = extract_and_flatten_print_args(&args, &mut method.attrs);
-                        let is_static = is_static_method(&method);
-                        let ty_str = ty_str.clone() + if is_static { "::" } else { "." };
-                        new_args.__struct_prefix = Some(ty_str);
-                        method.attrs.push(new_args.to_attribute());
-                    }
-                }
+                let new_args = extract_and_flatten_print_args(&args, &mut item_impl.attrs);
+                item_impl.attrs.push(new_args.to_attribute());
             }
             _ => {}
         }
@@ -451,6 +444,28 @@ fn print_run_mod(args: PrintRunArgs, mut module_item: ItemMod) -> TokenStream {
     let module_tokens = module_item.into_token_stream();
 
     quote! { #module_tokens #helper_module }.into()
+}
+
+fn print_run_impl(args: PrintRunArgs, mut impl_item: ItemImpl) -> TokenStream {
+    // Get struct name
+    let ty_str = (&impl_item.self_ty).into_token_stream().to_string();
+
+    // Look for methods
+    for impl_item in &mut impl_item.items {
+        if let ImplItem::Fn(method) = impl_item {
+            let mut new_args = extract_and_flatten_print_args(&args, &mut method.attrs);
+            let is_static = is_static_method(&method);
+            let ty_str = ty_str.clone() + if is_static { "::" } else { "." };
+            new_args.__struct_prefix = Some(ty_str);
+            method.attrs.push(new_args.to_attribute());
+        }
+    }
+
+    // Add helper module if needed
+    let helper_module = define_helper_module();
+    let impl_tokens = impl_item.into_token_stream();
+
+    quote! { #impl_tokens #helper_module }.into()
 }
 
 fn extract_and_flatten_print_args(
