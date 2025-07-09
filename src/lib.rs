@@ -62,13 +62,21 @@ impl PrintRunArgs {
 
     fn to_attribute(&self) -> Attribute {
         let arg_idents = self.to_idents();
-        let pre = self
-            .__struct_prefix
-            .as_ref()
-            .and_then(|p| Some(p.as_str()))
-            .unwrap_or("");
-        parse_quote! {
-            #[print_run::print_run( #(#arg_idents),*, __struct_prefix=#pre )]
+        let pre = self.__struct_prefix.as_ref().and_then(|p| Some(p.as_str()));
+
+        match (arg_idents.is_empty(), pre) {
+            (true, None) => parse_quote! {
+                #[print_run::print_run]
+            },
+            (true, Some(pre_val)) => parse_quote! {
+                #[print_run::print_run(__struct_prefix = #pre_val)]
+            },
+            (false, None) => parse_quote! {
+                #[print_run::print_run( #(#arg_idents),* )]
+            },
+            (false, Some(pre_val)) => parse_quote! {
+                #[print_run::print_run( #(#arg_idents),*, __struct_prefix = #pre_val )]
+            },
         }
     }
 
