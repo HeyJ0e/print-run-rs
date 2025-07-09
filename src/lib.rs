@@ -4,7 +4,7 @@ use quote::{ToTokens, format_ident, quote};
 use std::sync::{Once, OnceLock};
 use syn::{
     Attribute, Error, FnArg, Ident, ImplItem, ImplItemFn, Item, ItemFn, ItemMod, LitStr, Result,
-    Token,
+    Token, parse,
     parse::{Parse, ParseStream},
     parse_macro_input, parse_quote,
 };
@@ -13,7 +13,7 @@ static IS_HELPER_MODULE_ADDED: Once = Once::new();
 static PRINT_RUN_DEFAULTS: OnceLock<PrintRunArgs> = OnceLock::new();
 
 /// Optional input flags
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct PrintRunArgs {
     colored: Option<bool>,
     duration: Option<bool>,
@@ -24,7 +24,51 @@ struct PrintRunArgs {
 }
 
 impl PrintRunArgs {
-    pub fn to_idents(&self) -> Vec<Ident> {
+    fn merge(&mut self, override_args: &PrintRunArgs) {
+        self.colored = override_args.colored.or(self.colored);
+        self.duration = override_args.duration.or(self.duration);
+        self.indent = override_args.indent.or(self.indent);
+        self.supress_labels = override_args.supress_labels.or(self.supress_labels);
+        self.timestamps = override_args.timestamps.or(self.timestamps);
+        self.__struct_prefix = override_args
+            .__struct_prefix
+            .clone()
+            .or_else(|| self.__struct_prefix.clone());
+    }
+
+    fn add_globals(&mut self) {
+        if let Some(glob) = get_print_run_defaults() {
+            if let Some(v) = glob.colored {
+                self.colored = Some(v);
+            }
+            if let Some(v) = glob.duration {
+                self.duration = Some(v);
+            }
+            if let Some(v) = glob.indent {
+                self.indent = Some(v);
+            }
+            if let Some(v) = glob.supress_labels {
+                self.supress_labels = Some(v);
+            }
+            if let Some(v) = glob.timestamps {
+                self.timestamps = Some(v);
+            }
+        }
+    }
+
+    fn to_attribute(&self) -> Attribute {
+        let arg_idents = self.to_idents();
+        let pre = self
+            .__struct_prefix
+            .as_ref()
+            .and_then(|p| Some(p.as_str()))
+            .unwrap_or("");
+        parse_quote! {
+            #[print_run::print_run( #(#arg_idents),*, __struct_prefix=#pre )]
+        }
+    }
+
+    fn to_idents(&self) -> Vec<Ident> {
         let mut result = Vec::new();
 
         if self.colored == Some(true) {
@@ -44,20 +88,6 @@ impl PrintRunArgs {
         }
 
         result
-    }
-
-    pub fn merge_with(&self, override_args: &PrintRunArgs) -> PrintRunArgs {
-        PrintRunArgs {
-            colored: override_args.colored.or(self.colored),
-            duration: override_args.duration.or(self.duration),
-            indent: override_args.indent.or(self.indent),
-            timestamps: override_args.timestamps.or(self.timestamps),
-            supress_labels: override_args.supress_labels.or(self.supress_labels),
-            __struct_prefix: override_args
-                .__struct_prefix
-                .clone()
-                .or_else(|| self.__struct_prefix.clone()),
-        }
     }
 }
 
@@ -215,7 +245,7 @@ pub fn print_run_defaults(attr: TokenStream, input: TokenStream) -> TokenStream 
     let args = parse_macro_input!(attr as PrintRunArgs);
 
     if PRINT_RUN_DEFAULTS.set(args).is_err() {
-        return syn::Error::new_spanned(
+        return Error::new_spanned(
             proc_macro2::TokenStream::from(attr_clone),
             "print run defaults already set",
         )
@@ -228,23 +258,22 @@ pub fn print_run_defaults(attr: TokenStream, input: TokenStream) -> TokenStream 
 
 #[proc_macro_attribute]
 pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut args = parse_macro_input!(attr as PrintRunArgs);
-    if let Some(defaults) = get_print_run_defaults() {
-        args = defaults.merge_with(&args);
-    }
+    let args = parse_macro_input!(attr as PrintRunArgs);
 
-    // Try parsing as a function first
-    if let Ok(func) = syn::parse::<ItemFn>(item.clone()) {
-        return print_run_fn(args, func);
+    // Try parsing as a function
+    if let Ok(mut func) = parse::<ItemFn>(item.clone()) {
+        let new_args = extract_and_flatten_print_args(&args, &mut func.attrs);
+        return print_run_fn(new_args, func);
     }
 
     // Try parsing as a module
-    if let Ok(module) = syn::parse::<ItemMod>(item.clone()) {
-        return print_run_mod(args, module);
+    if let Ok(mut module) = parse::<ItemMod>(item.clone()) {
+        let new_args = extract_and_flatten_print_args(&args, &mut module.attrs);
+        return print_run_mod(new_args, module);
     }
 
     // Unsupported item — return error
-    syn::Error::new_spanned(
+    Error::new_spanned(
         proc_macro2::TokenStream::from(item),
         "#[print_run] can only be used on functions or inline modules",
     )
@@ -252,7 +281,11 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-fn print_run_fn(args: PrintRunArgs, fn_item: ItemFn) -> TokenStream {
+fn print_run_fn(mut args: PrintRunArgs, fn_item: ItemFn) -> TokenStream {
+    // Add global args
+    args.add_globals();
+
+    // Extract args and item attributes
     let PrintRunArgs {
         colored,
         duration,
@@ -353,41 +386,45 @@ fn print_run_fn(args: PrintRunArgs, fn_item: ItemFn) -> TokenStream {
 }
 
 fn print_run_mod(args: PrintRunArgs, mut module_item: ItemMod) -> TokenStream {
-    let arg_idents = args.to_idents();
-    let fn_macro: Attribute = parse_quote! {
-        #[print_run::print_run( #(#arg_idents),* )]
+    // Check if it's an inline module
+    let content = match module_item.content {
+        Some((_, ref mut items)) => items,
+        _ => {
+            return Error::new_spanned(
+                module_item.mod_token,
+                "`#[print_run]` only supports inline modules",
+            )
+            .to_compile_error()
+            .into();
+        }
     };
 
     // Add the macro attribute to all functions and struct methods in the module
-    if let Some((_, ref mut items)) = module_item.content {
-        for item in items {
-            match item {
-                Item::Fn(func) => {
-                    func.attrs.push(fn_macro.clone());
-                }
-                Item::Impl(item_impl) => {
-                    let ty_str = (&item_impl.self_ty).into_token_stream().to_string();
-                    for impl_item in &mut item_impl.items {
-                        if let ImplItem::Fn(method) = impl_item {
-                            let is_static = is_static_method(&method);
-                            let ty_str = ty_str.clone() + if is_static { "::" } else { "." };
-                            let fn_macro = parse_quote! {
-                                #[print_run::print_run( #(#arg_idents),*, __struct_prefix=#ty_str )]
-                            };
-                            method.attrs.push(fn_macro);
-                        }
+    for item in content {
+        match item {
+            // Normal functions
+            Item::Fn(func) => {
+                let new_args = extract_and_flatten_print_args(&args, &mut func.attrs);
+                func.attrs.push(new_args.to_attribute());
+            }
+            // Struct member functions
+            Item::Impl(item_impl) => {
+                // Get struct name
+                let ty_str = (&item_impl.self_ty).into_token_stream().to_string();
+
+                // Look for struct methods
+                for impl_item in &mut item_impl.items {
+                    if let ImplItem::Fn(method) = impl_item {
+                        let mut new_args = extract_and_flatten_print_args(&args, &mut method.attrs);
+                        let is_static = is_static_method(&method);
+                        let ty_str = ty_str.clone() + if is_static { "::" } else { "." };
+                        new_args.__struct_prefix = Some(ty_str);
+                        method.attrs.push(new_args.to_attribute());
                     }
                 }
-                _ => {}
             }
+            _ => {}
         }
-    } else {
-        return Error::new_spanned(
-            module_item.mod_token,
-            "`#[print_run]` only supports inline modules",
-        )
-        .to_compile_error()
-        .into();
     }
 
     // Add helper module if needed
@@ -395,6 +432,33 @@ fn print_run_mod(args: PrintRunArgs, mut module_item: ItemMod) -> TokenStream {
     let module_tokens = module_item.into_token_stream();
 
     TokenStream::from(quote! { #module_tokens #helper_module })
+}
+
+fn extract_and_flatten_print_args(
+    parent: &PrintRunArgs,
+    attrs: &mut Vec<Attribute>,
+) -> PrintRunArgs {
+    // Get global defaults or empty args
+    let mut merged_args = get_print_run_defaults()
+        .as_deref()
+        .and_then(|a| Some(a.clone()))
+        .unwrap_or(PrintRunArgs::default());
+
+    // Keep only non-#[print_run] attrs
+    attrs.retain(|attr| {
+        if attr.path().is_ident("print_run") {
+            if let Ok(parsed) = attr.parse_args::<PrintRunArgs>() {
+                merged_args.merge(&parsed);
+            }
+            false // drop this attr
+        } else {
+            true // keep
+        }
+    });
+    merged_args.merge(parent);
+    merged_args.add_globals();
+
+    merged_args
 }
 
 fn define_helper_module() -> proc_macro2::TokenStream {
