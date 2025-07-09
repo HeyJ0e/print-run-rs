@@ -255,6 +255,49 @@ fn get_print_run_defaults() -> Option<&'static PrintRunArgs> {
     PRINT_RUN_DEFAULTS.get()
 }
 
+/// Attribute macro to define global defaults for `#[print_run(...)]`.
+///
+/// This macro sets the default configuration for all `#[print_run]` invocations
+/// in the current crate. It can be overridden locally.
+///
+/// It allows you to avoid repeating common arguments like `colored`, `indent`, or `duration`
+/// across multiple annotated items.
+///
+/// > ⚠️ Due to current Rust limitations, this cannot be written as a crate-level attribute like `#![print_run_defaults(...)]`.
+/// > Instead, place it somewhere inside the crate as a regular attribute.
+///
+/// # Usage
+///
+/// ```
+/// #[print_run_defaults(colored, indent, duration)]
+/// mod my_mod {
+///     #[print_run] // inherits: colored, indent, duration
+///     fn foo() {}
+///
+///     #[print_run(timestamps)] // adds timestamps to colored, indent, duration
+///     fn bar() {}
+/// }
+/// ```
+///
+/// # Available arguments
+///
+/// - `colored`: Enable ANSI color output
+/// - `duration`: Show elapsed time on function exit
+/// - `indent`: Show visual indentation based on call depth
+/// - `skip`: Skip instrumentation for the entire crate
+/// - `supress_labels`: Hide `starting` / `ended` labels
+/// - `timestamps`: Add timestamp to each printed line
+///
+/// # Notes
+///
+/// - Can be used **once per create** (typically at the top of a module)
+/// - Only applies to functions that annotated with `#[print_run(...)]`
+/// - Cannot be applied with `#![...]` syntax (Rust limitation)
+///
+/// # See also
+///
+/// - [`print_run`](crate::print_run): For instrumenting individual functions/modules/impl blocks
+///
 #[proc_macro_attribute]
 pub fn print_run_defaults(attr: TokenStream, input: TokenStream) -> TokenStream {
     let attr_clone = attr.clone();
@@ -272,6 +315,91 @@ pub fn print_run_defaults(attr: TokenStream, input: TokenStream) -> TokenStream 
     input
 }
 
+/// Procedural macro to automatically log function entry and exit.
+///
+/// This macro prints messages when a function or method begins and ends execution.
+/// It can display timestamps, durations, and indentation based on configuration flags.
+/// It also enables a `msg!()` macro inside annotated functions for indented logging.
+///
+/// # Features
+///
+/// - Logs function start and end messages
+/// - Supports optional ANSI color output
+/// - Shows nested indentation for call hierarchy
+/// - Supports async functions
+/// - Shows execution duration (auto scales to s/ms/µs/ns)
+/// - Optionally prints timestamps
+/// - Usable on functions, impl blocks, and inline modules
+///
+/// # Usage
+///
+/// ```
+/// use print_run_rs::print_run;
+///
+/// #[print_run]
+/// fn my_func() {
+///     msg!("Doing something!");
+/// }
+///
+/// #[print_run(colored, duration, indent)]
+/// fn another() { }
+/// ```
+///
+/// # Available arguments
+///
+/// - `colored`: Enable ANSI color output
+/// - `duration`: Show elapsed time on function exit
+/// - `indent`: Show visual indentation based on call depth
+/// - `skip`: Skip instrumentation for this item
+/// - `supress_labels`: Hide `starting` / `ended` labels
+/// - `timestamps`: Add timestamp to each printed line
+///
+/// # Module-level usage
+///
+/// Can be used on inline `mod` blocks to apply the same instrumentation to all functions inside:
+///
+/// ```
+/// #[print_run(indent, duration)]
+/// mod my_mod {
+///     fn foo() {}
+///
+///     #[print_run(skip)]
+///     fn bar() {} // This will not be instrumented
+/// }
+/// ```
+///
+/// # Impl blocks
+///
+/// Apply to `impl` blocks to instrument all methods inside:
+///
+/// ```
+/// struct MyStruct;
+///
+/// #[print_run(indent)]
+/// impl MyStruct {
+///     fn method_1(&self) {}
+///     fn method_2(&self) {}
+/// }
+/// ```
+///
+/// # `msg!()` macro
+///
+/// Inside `#[print_run]` functions, you can use `msg!()` as an indented alternative to `println!()`.
+/// It aligns with current indentation and can help make logs clearer:
+///
+/// ```
+/// #[print_run(indent)]
+/// fn do_something() {
+///     msg!("Hello {}", 123);
+/// }
+/// ```
+///
+/// # Limitations
+///
+/// - Only **inline modules** (`mod mymod { ... }`) are supported
+/// - Procedural macros can't modify items across files
+/// - Crate-level defaults must be written as `#[print_run_defaults(...)]` (not `#![...]`)
+///
 #[proc_macro_attribute]
 pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as PrintRunArgs);
