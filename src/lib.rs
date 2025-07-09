@@ -1,5 +1,6 @@
 use nu_ansi_term::{Color, ansi::RESET};
 use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
 use quote::{ToTokens, format_ident, quote};
 use std::sync::{Once, OnceLock};
 use syn::{
@@ -18,6 +19,7 @@ struct PrintRunArgs {
     colored: Option<bool>,
     duration: Option<bool>,
     indent: Option<bool>,
+    skip: Option<bool>,
     supress_labels: Option<bool>,
     timestamps: Option<bool>,
     __struct_prefix: Option<String>,
@@ -28,6 +30,7 @@ impl PrintRunArgs {
         self.colored = override_args.colored.or(self.colored);
         self.duration = override_args.duration.or(self.duration);
         self.indent = override_args.indent.or(self.indent);
+        self.skip = override_args.skip.or(self.skip);
         self.supress_labels = override_args.supress_labels.or(self.supress_labels);
         self.timestamps = override_args.timestamps.or(self.timestamps);
         self.__struct_prefix = override_args
@@ -46,6 +49,9 @@ impl PrintRunArgs {
             }
             if let Some(v) = glob.indent {
                 self.indent = Some(v);
+            }
+            if let Some(v) = glob.skip {
+                self.skip = Some(v);
             }
             if let Some(v) = glob.supress_labels {
                 self.supress_labels = Some(v);
@@ -80,6 +86,9 @@ impl PrintRunArgs {
         if self.indent == Some(true) {
             result.push(format_ident!("indent"));
         }
+        if self.skip == Some(true) {
+            result.push(format_ident!("skip"));
+        }
         if self.supress_labels == Some(true) {
             result.push(format_ident!("supress_labels"));
         }
@@ -103,6 +112,7 @@ impl Parse for PrintRunArgs {
                 "colored" => args.colored = Some(true),
                 "duration" => args.duration = Some(true),
                 "indent" => args.indent = Some(true),
+                "skip" => args.skip = Some(true),
                 "supress_labels" => args.supress_labels = Some(true),
                 "timestamps" => args.timestamps = Some(true),
                 "__struct_prefix" => {
@@ -246,7 +256,7 @@ pub fn print_run_defaults(attr: TokenStream, input: TokenStream) -> TokenStream 
 
     if PRINT_RUN_DEFAULTS.set(args).is_err() {
         return Error::new_spanned(
-            proc_macro2::TokenStream::from(attr_clone),
+            TokenStream2::from(attr_clone),
             "print run defaults already set",
         )
         .to_compile_error()
@@ -274,14 +284,14 @@ pub fn print_run(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Unsupported item — return error
     Error::new_spanned(
-        proc_macro2::TokenStream::from(item),
+        TokenStream2::from(item),
         "#[print_run] can only be used on functions or inline modules",
     )
     .to_compile_error()
     .into()
 }
 
-fn print_run_fn(mut args: PrintRunArgs, fn_item: ItemFn) -> TokenStream {
+fn print_run_fn(mut args: PrintRunArgs, mut fn_item: ItemFn) -> TokenStream {
     // Add global args
     args.add_globals();
 
@@ -290,21 +300,31 @@ fn print_run_fn(mut args: PrintRunArgs, fn_item: ItemFn) -> TokenStream {
         colored,
         duration,
         indent,
+        skip,
         supress_labels,
         timestamps,
         __struct_prefix,
     } = args;
+    let colored = colored == Some(true);
+    let duration = duration == Some(true);
+    let indent = indent == Some(true);
+    let skip = skip == Some(true);
+    let supress_labels = supress_labels == Some(true);
+    let timestamps = timestamps == Some(true);
+
+    if skip {
+        // Add use println as msg to prevent missing `msg` macro
+        let use_msg = parse_quote! { use std::println as msg; };
+        fn_item.block.stmts.insert(0, use_msg);
+        return fn_item.to_token_stream().into();
+    }
+
     let ItemFn {
         attrs,
         vis,
         sig,
         block,
     } = fn_item;
-    let colored = colored == Some(true);
-    let duration = duration == Some(true);
-    let indent = indent == Some(true);
-    let supress_labels = supress_labels == Some(true);
-    let timestamps = timestamps == Some(true);
 
     // Create name with prefix
     let fn_name = sig.ident.to_string();
@@ -376,13 +396,12 @@ fn print_run_fn(mut args: PrintRunArgs, fn_item: ItemFn) -> TokenStream {
     let helper_module = define_helper_module();
 
     // Reconstruct the function
-    let output = quote! {
+    quote! {
         #(#attrs)*
         #vis #sig #new_block
         #helper_module
-    };
-
-    TokenStream::from(output)
+    }
+    .into()
 }
 
 fn print_run_mod(args: PrintRunArgs, mut module_item: ItemMod) -> TokenStream {
@@ -431,7 +450,7 @@ fn print_run_mod(args: PrintRunArgs, mut module_item: ItemMod) -> TokenStream {
     let helper_module = define_helper_module();
     let module_tokens = module_item.into_token_stream();
 
-    TokenStream::from(quote! { #module_tokens #helper_module })
+    quote! { #module_tokens #helper_module }.into()
 }
 
 fn extract_and_flatten_print_args(
@@ -461,7 +480,7 @@ fn extract_and_flatten_print_args(
     merged_args
 }
 
-fn define_helper_module() -> proc_macro2::TokenStream {
+fn define_helper_module() -> TokenStream2 {
     // Define support module with DEPTH if it runs for the first time
     let mut define = false;
     IS_HELPER_MODULE_ADDED.call_once(|| define = true);
