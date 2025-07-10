@@ -1,3 +1,46 @@
+//! # print-run
+//!
+//! A procedural macro crate for tracing Rust function and module execution — with style.
+//!
+//! `print-run` provides `#[print_run]` attribute macro that automatically logs when functions start and finish, with optional color, duration, nested indentation, timestamps and more.
+//!
+//! It’s ideal for skeletons, debugging, quick prototypes, educational examples, or even just fun visual feedback.
+//!
+//! ## Features
+//!
+//! - Supports standalone functions, `impl` blocks, and inline `mod`s
+//! - Logs entry and exit of functions
+//! - Draws visual call hierarchy (indents nested calls)
+//! - Measures and displays execution duration
+//! - Supports async functions
+//! - Optional color and timestamps
+//! - `msg!()` macro for indented, bold `println!`-style output
+//!
+//! ## Usage
+//!
+//! Apply `#[print_run]` to any function:
+//!
+//! ```rust
+//! use print_run_rs::print_run;
+//!
+//! #[print_run]
+//! fn demo() {
+//!     msg!("Running...");
+//! }
+//! ```
+//!
+//! Use `#[print_run_defaults(...)]` to set global options for the crate:
+//!
+//! ```rust
+//! #[print_run_defaults(indent, colored)]
+//! ```
+//!
+//! #### For more, see the crate [README](https://github.com/HeyJ0e/print-run-rs).
+//!
+//! ## License
+//!
+//! Licensed under MIT.
+
 use nu_ansi_term::{Color, ansi::RESET};
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
