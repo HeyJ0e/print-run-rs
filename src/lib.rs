@@ -21,7 +21,7 @@
 //! Apply `#[print_run]` to any function:
 //!
 //! ```rust
-//! use print_run_rs::print_run;
+//! use print_run::print_run;
 //!
 //! #[print_run]
 //! fn demo() {
