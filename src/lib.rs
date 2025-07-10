@@ -8,6 +8,10 @@ use syn::{
     Result, Token, parse, parse_macro_input, parse_quote,
 };
 
+#[allow(unused)]
+#[cfg(doctest)]
+mod helper;
+
 static IS_HELPER_MODULE_ADDED: Once = Once::new();
 static PRINT_RUN_DEFAULTS: OnceLock<PrintRunArgs> = OnceLock::new();
 
@@ -239,8 +243,16 @@ macro_rules! create_indent {
     ($val:expr, $ch:expr) => {{
         let val = $val;
         let ch = $ch;
+
+        // hack for doctest
+        let depth_path: syn::Expr = if cfg!(doctest) {
+            syn::parse_str("crate::helper::DEPTH").unwrap()
+        } else {
+            syn::parse_str("crate::__print_run_helper::DEPTH").unwrap()
+        };
+
         quote! {
-            || crate::__print_run_helper::DEPTH.with(|depth| {
+            || {#depth_path}.with(|depth| {
                 let depth_val = *depth.borrow();
                 *depth.borrow_mut() = depth_val.saturating_add_signed(#val);
                 let depth_val= depth_val.saturating_add_signed((#val-1) / 2);
@@ -268,15 +280,21 @@ fn get_print_run_defaults() -> Option<&'static PrintRunArgs> {
 ///
 /// # Usage
 ///
-/// ```
-/// #[print_run_defaults(colored, indent, duration)]
-/// mod my_mod {
-///     #[print_run] // inherits: colored, indent, duration
-///     fn foo() {}
+/// ```rust
+/// use print_run::{print_run, print_run_defaults};
 ///
-///     #[print_run(timestamps)] // adds timestamps to colored, indent, duration
-///     fn bar() {}
+/// #[print_run_defaults(colored, indent, duration)]
+/// #[print_run] // inherits: colored, indent, duration
+/// pub fn foo() {
+///     msg!("Hello from one");
 /// }
+///
+/// #[print_run(timestamps)] // adds timestamps to colored, indent, duration
+/// pub fn bar() {
+///     msg!("Hello from two");
+/// }
+///
+/// # fn main() {}
 /// ```
 ///
 /// # Available arguments
@@ -296,7 +314,7 @@ fn get_print_run_defaults() -> Option<&'static PrintRunArgs> {
 ///
 /// # See also
 ///
-/// - [`print_run`](crate::print_run): For instrumenting individual functions/modules/impl blocks
+/// - [`print_run`](macro@crate::print_run): For instrumenting individual functions/modules/impl blocks
 ///
 #[proc_macro_attribute]
 pub fn print_run_defaults(attr: TokenStream, input: TokenStream) -> TokenStream {
@@ -334,7 +352,7 @@ pub fn print_run_defaults(attr: TokenStream, input: TokenStream) -> TokenStream 
 /// # Usage
 ///
 /// ```
-/// use print_run_rs::print_run;
+/// use print_run::print_run;
 ///
 /// #[print_run]
 /// fn my_func() {
@@ -343,6 +361,8 @@ pub fn print_run_defaults(attr: TokenStream, input: TokenStream) -> TokenStream 
 ///
 /// #[print_run(colored, duration, indent)]
 /// fn another() { }
+///
+/// # fn main() {}
 /// ```
 ///
 /// # Available arguments
@@ -359,13 +379,17 @@ pub fn print_run_defaults(attr: TokenStream, input: TokenStream) -> TokenStream 
 /// Can be used on inline `mod` blocks to apply the same instrumentation to all functions inside:
 ///
 /// ```
+/// use print_run::print_run;
+///
 /// #[print_run(indent, duration)]
 /// mod my_mod {
-///     fn foo() {}
+///     pub fn foo() {}
 ///
 ///     #[print_run(skip)]
-///     fn bar() {} // This will not be instrumented
+///     pub fn bar() {} // This will not be instrumented
 /// }
+///
+/// # fn main() {}
 /// ```
 ///
 /// # Impl blocks
@@ -373,6 +397,8 @@ pub fn print_run_defaults(attr: TokenStream, input: TokenStream) -> TokenStream 
 /// Apply to `impl` blocks to instrument all methods inside:
 ///
 /// ```
+/// use print_run::print_run;
+///
 /// struct MyStruct;
 ///
 /// #[print_run(indent)]
@@ -380,6 +406,8 @@ pub fn print_run_defaults(attr: TokenStream, input: TokenStream) -> TokenStream 
 ///     fn method_1(&self) {}
 ///     fn method_2(&self) {}
 /// }
+///
+/// # fn main() {}
 /// ```
 ///
 /// # `msg!()` macro
@@ -388,10 +416,14 @@ pub fn print_run_defaults(attr: TokenStream, input: TokenStream) -> TokenStream 
 /// It aligns with current indentation and can help make logs clearer:
 ///
 /// ```
+/// use print_run::print_run;
+///
 /// #[print_run(indent)]
 /// fn do_something() {
 ///     msg!("Hello {}", 123);
 /// }
+///
+/// # fn main() {}
 /// ```
 ///
 /// # Limitations

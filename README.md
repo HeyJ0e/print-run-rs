@@ -38,7 +38,7 @@ print-run = "0.1"
 ### Basic usage
 
 ```rust
-use print_run_rs::print_run;
+use print_run::print_run;
 
 #[print_run]
 fn my_function() {
