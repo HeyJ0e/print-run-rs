@@ -597,7 +597,7 @@ fn print_run_fn(mut args: PrintRunArgs, mut fn_item: ItemFn) -> TokenStream {
             println!("{}{}{} {}", ts, indent, #start, #start_label);
             #msg_macro
 
-            let result = (|| #block)();
+            let result = {#block};
 
             let dur = {#duration_fn}(start);
             let ts = {#create_timestamp_fn}();
