@@ -10,9 +10,9 @@ documentation = "https://docs.rs/print-run"
 readme = "README.md"
 keywords = ["debugging", "tracing", "logging", "procedural-macro", "skeleton"]
 categories = [
+  "development-tools",
   "development-tools::debugging",
   "development-tools::profiling",
-  "macros",
 ]
 exclude = ["/.github", "/assets", "/.devcontainer"]
 
